@@ -24,8 +24,8 @@ const uint16_t mqtt_port = 16664;
 #define mqtt_topic_pub "KhuA/A103"
 #define mqtt_topic_sub "KhuA/A103"
 
-const int acPin = 2;
-const int fanPin = 0;
+const int acPin = 13;
+const int fanPin = 2;
 const int ledPin = 4;
 
 const long utcOffsetInSeconds = 25200;
@@ -35,6 +35,8 @@ int endHour;
 int endMinute;
 int tempSec;
 long accessSec;
+long accessRfidSec;
+bool rfidFlag = false;
 bool endFlag = false;
 bool connectstatusFlag = false;
 bool acFlag = false;
@@ -66,6 +68,7 @@ NexPage SetTimePage = NexPage(3, 0, "SetTimePage"); //Set end Time Page
 NexPage SuccessPage = NexPage(4, 0, "SuccessPage"); // SuccessPage
 NexPage FailPage = NexPage(5, 0, "FailPage"); //Fail Page
 NexPage AddRfidPage = NexPage(7, 0, "AddRfidPage"); // Add new Rfid Page
+NexPage TurnOffAllPage = NexPage(9, 0, "OffAllPage"); // Add new Rfid Page
 //TextBox
 NexText connectTextBox = NexText(0, 1, "t0"); //Connecting TextBox
 NexText endTime = NexText(3, 14, "t4");
@@ -82,6 +85,7 @@ NexButton lampOnBtn = NexButton(2, 6, "b3");
 NexButton lampOffBtn = NexButton(2, 7, "b4");
 NexButton fanOnBtn = NexButton(2, 10, "b6");
 NexButton fanOffBtn = NexButton(2, 11, "b7");
+NexButton nextBtn = NexButton(2, 8, "b5");
 NexButton t2EndBtn = NexButton(3, 2, "b0");
 NexButton t3EndBtn = NexButton(3, 3, "b1");
 NexButton t4EndBtn = NexButton(3, 4, "b2");
@@ -91,7 +95,7 @@ NexButton t9EndBtn = NexButton(3, 7, "b5");
 NexButton t10EndBtn = NexButton(3, 8, "b6");
 NexButton t11EndBtn = NexButton(3, 9, "b7");
 NexButton doneBtn = NexButton(3, 12, "b8");
-NexButton rfidBackBtn = NexButton(7, 2, "b0");
+NexButton rfidBackBtn = NexButton(7, 2, "rfidBack");
 
 void tftUpdate();
 
@@ -105,6 +109,7 @@ NexTouch *nex_listen_list[] =
   &lampOffBtn,
   &fanOnBtn,
   &fanOffBtn,
+  &nextBtn,
   &t2EndBtn,
   &t3EndBtn,
   &t4EndBtn,
@@ -119,17 +124,12 @@ NexTouch *nex_listen_list[] =
 };
 
 
+
 void rfidBackBtn_release(void *ptr) {
-  entry.show();
+  addNewRfidStatus.setText("Vui long nhap the RFID");
   writeFlag = false;
   addRfidFlag = false;
-  connectTextBox.setText("Vui long nhap the RFID");
-}
-
-void b30_release(void *ptr) {
-  // if(connectstatusFlag) {
-  //   MainPage.show();
-  // }
+  entry.show();
 }
 
 void acOnBtn_release(void *ptr){
@@ -244,6 +244,7 @@ void setTimeFailed() {
   accessSec = millis();
 }
 
+
 void setStatusDeviceText() {
   if(acFlag) {
     acStatusText.setText(":ON");
@@ -320,7 +321,8 @@ void setDataFireBase() {
   }
 
   if(endFlag) {
-    Firebase.setString(firebaseData, "/rooms/A103/fanStatus", "ON");
+    String end = String(endHour) + ":" + String(endMinute);
+    Firebase.setString(firebaseData, "/rooms/A103/endTime", end);
   }
   else {
     Firebase.setString(firebaseData, "/rooms/A103/endTime", "OFF");
@@ -329,6 +331,9 @@ void setDataFireBase() {
 
 void onSuccess() {
   timeSetFlag = false;
+  acTempFlag = false;
+  lampTempFlag = false;
+  fanTempFlag = false;
   SuccessPage.show();
   setDataFireBase();
   delay(5000);
@@ -373,6 +378,21 @@ void doneBtn_release(void *ptr) {
   }
 }
 
+void nextBtn_release(void *ptr) {
+  if(!acTempFlag && !fanTempFlag && !lampTempFlag) {
+    setDevice();
+    TurnOffAllPage.show();
+    endFlag = false;
+    timeSetFlag = false;
+    setDataFireBase();
+    delay(5000);
+    MainPage.show();
+    setStatusDeviceText();
+  }
+  else {
+    SetTimePage.show();
+  }
+}
 //Function to send update data to HMI Nextion
 void tftUpdate() {
   Serial2.write(0xff);
@@ -405,6 +425,9 @@ void setup() {
   // Init MFRC522
 	mfrc522.PCD_Init();
 	delay(4);				// Optional delay.
+  while(WiFi.status() != WL_CONNECTED) {
+    delay(100);
+  }
   //Init timeClient
   timeClient.begin();
   timeClient.update();
@@ -418,7 +441,7 @@ void setup() {
   pinMode(ledPin, OUTPUT);
   pinMode(fanPin, OUTPUT);
   //Set button callback function
-  supportBtn.attachPop(b30_release, &supportBtn);
+  nextBtn.attachPop(nextBtn_release, &nextBtn);
   acOnBtn.attachPop(acOnBtn_release, &acOnBtn);
   acOffBtn.attachPop(acOffBtn_release, &acOffBtn);
   lampOnBtn.attachPop(lampOnBtn_release, &lampOnBtn);
@@ -449,13 +472,17 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String removeRfid = "REMOVERFID";
   if(!a.compareTo(addRfid.c_str())) {
       AddRfidPage.show();
+      accessRfidSec = millis();
       writeFlag = true;
       addRfidFlag = true;
+      rfidFlag = true;
   }
   else if(!a.compareTo(removeRfid.c_str())) {
       AddRfidPage.show();
+      accessRfidSec = millis();
       writeFlag = true;
       addRfidFlag = false;
+      rfidFlag = true;
   }
   else {
       String ledStatus = a.substring(0,5);
@@ -509,9 +536,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
           tftUpdate();
           endTimeStatus.setText(tempEnd.c_str());
       }
-      a = "";
       setDataFireBase();
   }
+      a = "";
 }
 // Hàm reconnect thực hiện kết nối lại khi mất kết nối với MQTT Broker
 void reconnect() {
@@ -546,6 +573,20 @@ void updateConnectingTxt() {
   delay(1000);
 }
 
+void reachEndTime() {
+  digitalWrite(acPin, LOW);
+  digitalWrite(ledPin, LOW);
+  digitalWrite(fanPin, LOW);
+  acFlag = false;
+  lampFlag = false;
+  fanFlag = false;
+  setStatusDeviceText();
+  Serial2.print("t6.font=0");
+  tftUpdate();
+  endTimeStatus.setText("Not Set Yet!!");
+  endFlag = false;
+  setDataFireBase();
+}
 void loop() {
   // Kiểm tra kết nối
   nexLoop (nex_listen_list);
@@ -555,9 +596,7 @@ void loop() {
         reconnect();
       }
       client.loop();
-      //update Time
-      timeClient.update();
-      rtc.adjust(DateTime(2014, 1, 21, timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds()));
+
       //kiem tra the
       if(accessFlag) {
         if(millis() - accessSec >= 10000) {
@@ -566,14 +605,28 @@ void loop() {
           acTempFlag = false;
           lampTempFlag = false;
           accessFlag = false;
+          timeSetFlag = false;
         }
       }
       else {
         connectTextBox.setText("Vui long nhap the RFID");
       }
 
+      if(rfidFlag) {
+        if(millis() - accessRfidSec >= 5000) {
+          entry.show();
+          rfidFlag = false;
+          writeFlag = false;
+          addRfidFlag = false; 
+        }
+      }
       //Time
       DateTime now = rtc.now();
+      if(now.minute() % 10 == 0) {
+      //update Time
+        timeClient.update();
+        rtc.adjust(DateTime(2014, 1, 21, timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds()));
+      }
       if(tempSec != now.second()) {
         tempSec = now.second(); 
         Serial2.print("t2.txt=");
@@ -586,22 +639,27 @@ void loop() {
         Serial2.print("\"");
         tftUpdate();
         if(endFlag == true) {
-          if(endHour == now.hour() && endMinute == now.minute()) {
-            digitalWrite(acPin, LOW);
-            digitalWrite(ledPin, LOW);
-            digitalWrite(fanPin, LOW);
-            acFlag = false;
-            lampFlag = false;
-            fanFlag = false;
-            setStatusDeviceText();
-            Serial2.print("t6.font=0");
-            tftUpdate();
-            endTimeStatus.setText("Not Set Yet");
-            endFlag = false;
+          Serial2.print("endTime.font=1");
+          tftUpdate();
+          Serial2.print("endTime.txt=");
+          Serial2.print("\"");
+          Serial2.print(endHour);
+          Serial2.print(":");
+          Serial2.print(endMinute);
+          Serial2.print(":00");
+          Serial2.print("\"");
+          tftUpdate();
+          if(endHour < now.hour()) {
+            reachEndTime();
+          }
+          else if(endHour == now.hour()) {
+            if(endMinute <= now.minute()) {
+              reachEndTime();
+            }
           }
         }
         else {
-          endTimeStatus.setText("Not Set Yet");
+            endTimeStatus.setText("Not Set Yet!!");
         }
       }
 
@@ -625,6 +683,8 @@ void loop() {
         return;
       }
 
+      accessRfidSec = millis();
+
       if(writeFlag == false) {
         byte buffer1[18];
         block = 4;
@@ -646,21 +706,16 @@ void loop() {
             setStatusDeviceText();
             accessSec = millis();
             accessFlag = true;
-            if(endFlag) {
-              Serial2.print("t6.font=1");
-              tftUpdate();
-              Serial2.print("t6.txt=");
-              Serial2.print("\"");
-              Serial2.print(endHour);
-              Serial2.print(":");
-              Serial2.print(endMinute);
-              Serial2.print(":00");
-              Serial2.print("\"");
-              tftUpdate();
-            }
-            else {
-              endTimeStatus.setText("Not Set Yet");
-            }
+            Serial2.print("endTime.font=1");
+            tftUpdate();
+            Serial2.print("endTime.txt=");
+            Serial2.print("\"");
+            Serial2.print(endHour);
+            Serial2.print(":");
+            Serial2.print(endMinute);
+            Serial2.print(":00");
+            Serial2.print("\"");
+            tftUpdate();
           }
           else {
                 connectTextBox.setText("Kg phu hop!. Thu lai trong 5s");
@@ -678,10 +733,10 @@ void loop() {
         }
       // Write block
         byte valueBlockA = 4;
-        byte addBlock[] ={1, 2, 3, 0,   0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  valueBlockA, ~valueBlockA, valueBlockA, ~valueBlockA};
+        byte addBlock[] = {1, 2, 3, 0,   0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  valueBlockA, ~valueBlockA, valueBlockA, ~valueBlockA};
         byte removeBlock[] ={0, 0, 0, 0,   0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  valueBlockA, ~valueBlockA, valueBlockA, ~valueBlockA};
         char success[] =  "Them the moi thanh cong!";
-        char failed[] = "That bai!";
+        char failed[] = "Xoa the thanh cong!";
         char* result;
         if(addRfidFlag) {
           status = mfrc522.MIFARE_Write(block, addBlock, 16);
@@ -693,7 +748,7 @@ void loop() {
         }
         
         if (status != MFRC522::STATUS_OK) {
-          addNewRfidStatus.setText("that bai!");
+          addNewRfidStatus.setText("Ghi len the that bai!");
           return;
         }
         else {
@@ -703,10 +758,10 @@ void loop() {
         }
       }
 
-      mfrc522.PICC_HaltA();
-      mfrc522.PCD_StopCrypto1();
     }
     else {
       updateConnectingTxt();
     }
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
 }
